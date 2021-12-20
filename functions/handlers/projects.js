@@ -1,4 +1,5 @@
-const { db } = require("../util/admin");
+const { json } = require("express");
+const { db, admin } = require("../util/admin");
 const {
   validateCreateProject,
   reduceProjectDetails,
@@ -11,10 +12,10 @@ exports.getAllProjects = (request, response) => {
         .then(data => {
             let projects = [];
             data.forEach(doc => {
-            projects.push({
-                projectId: doc.id,
-                ...doc.data()
-            });
+              projects.push({
+                  projectId: doc.id,
+                  ...doc.data()
+              });
             });
             return response.json(projects);
         })
@@ -93,7 +94,9 @@ exports.diagramProject = (request, response) => {
       createdAt: new Date().toISOString(),
       projectId: request.params.projectId,
       diagramUserId: request.user.userId,
-      commentCount: 0
+      commentCount: 0,
+      objects: [],
+      objectsIds: []
     };
   
     const { valid, errors } = validateCreateDiagram(newDiagram);
@@ -143,6 +146,17 @@ exports.postOneProject = (request, response) => {
     .then(doc => {
       const resProject = newProject;
       resProject.projectId = doc.id;
+
+      if (newProject.observers.length > 0) {
+
+        let information = {
+          docId: doc.id,
+          projectId:  doc.id,
+          firstNameUser: newProject.firstNameUser,
+          diagramId: "",
+        }
+        saveNotifications(newProject.observers, "observer", information)
+      }
       response.json(resProject);
     })
     .catch(err => {
@@ -229,6 +243,7 @@ exports.deleteDiagram = (request, response) => {
 };
 
 exports.saveDiagram = (request, response) => {
+  let firstNameUser = request.user.firstNameUser
   let diagram = {
     diagram: request.body.diagram
   };
@@ -243,10 +258,15 @@ exports.saveDiagram = (request, response) => {
       if (doc.data().diagramUserId !== request.user.userId) {
         return response.status(403).json({ error: "No autorizado" });
       } else {
-        return document.update(diagram);
+        let {objectsIds, objects} = getDiagramObjects(diagram)
+        diagram.objects = objects
+        diagram.objectsIds = objectsIds
+        document.update(diagram);
+        return doc
       }
     })
-    .then(() => {
+    .then((res) => {
+      searchProjectForNotification(res, firstNameUser, res.data().projectId, res.id, "modify")
       response.json({ message: "Diagrama actualizado con éxito" });
     })
     .catch(err => {
@@ -254,6 +274,122 @@ exports.saveDiagram = (request, response) => {
       return response.status(500).json({ error: err.code });
     });
 };
+
+const getDiagramObjects = (diagram) => {
+  let jsonDiagram = JSON.parse(diagram.diagram)
+  let objects = []
+  let objectsIds = []
+  let newObject = {}
+  jsonDiagram.cells.forEach(element => {
+    if(element.class === 'object'){
+      newObject = {
+        id: element.id,
+        name: element.attrs.label.text,
+        colorName: element.attrs.root.labelcolor,
+        color: element.attrs.body.fill,
+        shape: element.attrs.root.title,
+      }
+      objects.push(newObject)
+      objectsIds.push(element.id)
+    }
+  });
+  
+  return {objectsIds, objects}
+}
+
+const searchProjectForNotification = (doc, firstNameUser, projectId, diagramId, type) => {
+  let docId = doc.id
+  db.doc(`/projects/${projectId}`)
+    .get()
+    .then(doc => {
+      let observers = doc.data().observers 
+      if (doc.exists && observers.length > 0) {
+        let information = {
+          docId,
+          projectId,
+          firstNameUser,
+          diagramId
+        }
+        if(type === "comment"){
+          observers = [doc.data().projectUserId]
+        }
+        saveNotifications(observers, type, information)
+      }
+    })
+    .catch(err => {
+      console.error(err);
+      return;
+    });
+}
+
+const saveNotifications = (userIds, type, information) => {
+  let tokens = []
+  let notificationTitle = ""
+  let notificationDescription = ""
+
+  let nuevaNotification = {
+    createdAt: new Date().toISOString(),
+    sender: information.firstNameUser,
+    type: type,
+    read: false,
+    projectId: information.projectId
+  }
+  db.collection('tokens')
+    .where('userId', 'in', userIds)
+    .get()
+    .then(doc => {
+      doc.docs.forEach(data => {
+        if(data.data().token !== ""){
+          tokens.push(data.data().token)
+        }
+      })
+
+      if(type === "observer"){
+        notificationTitle = information.firstNameUser +' ha creado un projecto'
+        notificationDescription = information.firstNameUser +' te asignó como observador'
+        dataValue = information.projectId
+      }else if(type === "comment"){
+        notificationTitle = information.firstNameUser +' ha comentado tu diagrama'
+        notificationDescription = ' ha sido comentado'
+        nuevaNotification.diagramId = information.diagramId
+        dataValue = information.docId
+      }else{
+        notificationTitle = information.firstNameUser +' ha modificado el diagrama'
+        notificationDescription = information.firstNameUser +' ha modificado el diagrama'
+        nuevaNotification.diagramId = information.diagramId
+        dataValue = information.diagramId           
+      }
+      nuevaNotification.title = notificationTitle
+      nuevaNotification.description = notificationDescription
+      nuevaNotification.description = notificationDescription
+      
+      const payload = {
+        notification: {
+          title: notificationTitle,
+          body: notificationDescription,
+          icon: '../favicon.ico',
+        },
+        data: {
+          type: type,
+          id: dataValue
+        }      
+      };
+      userIds.forEach(id => {
+    
+        nuevaNotification.recipient = id
+        db.collection("notifications").add(nuevaNotification);
+      });
+      admin.messaging().sendToDevice(tokens, payload);
+
+    })
+    .catch(err => {
+      console.error(err);
+      return;
+    });
+  
+  //end forEach
+  return tokens
+}
 
 
 exports.commentOnDiagram = (request, response) => {
@@ -285,7 +421,8 @@ exports.commentOnDiagram = (request, response) => {
     .then(() => {
       return db.collection("comments").add(newComment);
     })
-    .then(() => {
+    .then((res) => {
+      searchProjectForNotification(res, newComment.firstNameUser, newComment.projectId, newComment.diagramId, "comment")
       response.json(newComment);
     })
     .catch(err => {
@@ -306,4 +443,22 @@ exports.getAllAttributes = (request, response) => {
           return response.json(attributes);
       })
       .catch(err => console.error(err));
+};
+
+exports.getComment = (request, response) => {
+  const document = db.doc(`/comments/${request.params.commentId}`);
+  document
+    .get()
+    .then(doc => {
+      if (!doc.exists) {
+        return response.status(404).json({ error: "Diagrama no encontrado" });
+      }
+      let comment = doc.data();
+      comment.commentId = doc.id;
+      response.json(comment);
+    })
+    .catch(err => {
+      console.error(err);
+      return response.status(500).json({ error: err.code });
+    });
 };

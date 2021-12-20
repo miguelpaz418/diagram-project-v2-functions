@@ -42,14 +42,14 @@ exports.signup = (request, response) => {
     db.doc(`/users/${newUser.email}`)
         .get()
         .then(doc => {
-        if (doc.exists) {
-            return response
-            .status(400)
-            .json({ email: "este correo electrónico ya esta en uso" });
-        } else {
-            const auth = getAuth();
-            return createUserWithEmailAndPassword(auth, newUser.email, newUser.password)
-        }
+          if (doc.exists) {
+              return response
+              .status(400)
+              .json({ email: "este correo electrónico ya esta en uso" });
+          } else {
+              const auth = getAuth();
+              return createUserWithEmailAndPassword(auth, newUser.email, newUser.password)
+          }
         })
         .then(data => {
             userId = data.user.uid;
@@ -64,7 +64,8 @@ exports.signup = (request, response) => {
                 profession: newUser.profession,
                 email: newUser.email,
                 createdAt: new Date().toISOString(),
-                imageUrl: `https://firebasestorage.googleapis.com/v0/b/${config.storageBucket}/o/${noImg}?alt=media`
+                imageUrl: `https://firebasestorage.googleapis.com/v0/b/${config.storageBucket}/o/${noImg}?alt=media`,
+                tokens: []
             };
             return db.doc(`/users/${userId}`).set(userCredentials);
         })
@@ -146,18 +147,11 @@ exports.getAuthenticatedUser = (request, response) => {
       })
       .then(data => {
         userData.notifications = [];
-        if (data.exists) {
+        if (!data.empty) {
           data.forEach(doc => {
-            userData.notifications.push({
-              recipient: doc.data().recipient,
-              sender: doc.data().sender,
-              createdAt: doc.data().createdAt,
-              type: doc.data().type,
-              read: doc.data().read,
-              projectId: doc.data().projectId,
-              notificationId: doc.id,
-              diagramId: doc.data().diagramId
-            });
+            let notification = doc.data();
+            notification.notificationId = doc.id;
+            userData.notifications.push(notification);
           });
         }
         return response.json(userData);
@@ -262,7 +256,6 @@ exports.uploadImage = (request, response) => {
 
 exports.signupWithGoogle = (request, response) => {
   let token, userId;
-  console.log(request.body.idToken)
   const credential = GoogleAuthProvider.credential(null, request.body.idToken);
 /** 
   const credential = firebase.auth.GoogleAuthProvider.credential(
@@ -330,4 +323,101 @@ exports.passwordReset = (request, response) => {
       console.error(err);
       return response.status(500).json({ error: err.code });
     });
+};
+
+exports.markNotificationsRead = (request, response) => {
+  let batch = db.batch();
+  request.body.forEach(notificationId => {
+    const notification = db.doc(`/notifications/${notificationId}`);
+    batch.update(notification, { read: true });
+  });
+  batch
+    .commit()
+    .then(() => {
+      return response.json({ message: "Notification marked read" });
+    })
+    .catch(err => {
+      console.error(err);
+      return response.status(500).json({ error: err.code });
+    });
+};
+
+
+
+exports.getNotificationUser = async (request, response) => {
+db
+  .collection("notifications")
+  .orderBy("createdAt", "desc")
+  .where("recipient", "==", request.user.userId)
+  .limit(1)
+  .get()
+  .then(data => {
+    let notification = {};
+    if (data.size > 0) {
+      notification = data.docs[0].data();
+      notification.notificationId = data.docs[0].id;
+    }
+    return response.json(notification);
+  })
+  .catch(err => {
+    console.error(err);
+    response.status(500).json({ error: err.code });
+  });
+}
+
+exports.saveFcmToken = async (request, response) => {
+
+  const cityRef = db.collection('tokens').where("token", "==", request.body.token);
+  cityRef.get()
+  .then(doc => {
+    if (doc.size > 0) {
+      if(doc.docs[0].data().userId != request.user.userId){
+        doc.docs[0].ref.update({ token: "" });
+        const cityRef2 = db.collection('tokens').where("userId", "==", request.user.userId);
+        cityRef2.get()
+        .then(doc => {
+          if (doc.size > 0) {
+            doc.docs[0].ref.update({ token: request.body.token });
+            return response.json({ message: "Token has saved"});
+          }else{
+            //crearlo
+            let newToken = {
+              token: request.body.token,
+              userId: request.user.userId
+            }
+            db.collection("tokens").add(newToken)
+            return response.json({ message: "Token is already saved" });
+          }
+        })
+      }else{
+        return response.json({ message: "Token is already saved" });
+      }
+
+    }else{
+      const cityRef2 = db.collection('tokens').where("userId", "==", request.user.userId);
+      cityRef2.get()
+      .then(doc => {
+        if (doc.size > 0) {
+
+          doc.docs[0].ref.update({ token: request.body.token });
+          return response.json({ message: "Token has saved"});
+        }else{
+          //crearlo
+
+          let newToken = {
+            token: request.body.token,
+            userId: request.user.userId
+          }
+          db.collection("tokens").add(newToken)
+          return response.json({ message: "Token is already saved" });
+        }
+      })
+    }
+  })
+  .catch(err => {
+    console.error(err);
+    return response.status(500).json({ error: err.code });
+  });
+
+
 };
