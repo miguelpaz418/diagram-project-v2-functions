@@ -1,4 +1,5 @@
 const { json } = require("express");
+const { object } = require("firebase-functions/v1/storage");
 const { db, admin } = require("../util/admin");
 const {
   validateCreateProject,
@@ -56,6 +57,7 @@ exports.getProject = async (request, response) => {
 
 exports.getDiagram = (request, response) => {
     let diagramData = {};
+    let allCells = []
     db.doc(`/diagrams/${request.params.diagramId}`)
       .get()
       .then(doc => {
@@ -63,7 +65,7 @@ exports.getDiagram = (request, response) => {
           return response.status(404).json({ error: "Diagrama no encontrado" });
         } else {
           diagramData = doc.data();
-          diagramData.diagramId = doc.id;
+          idDiagram = doc.id
           return db
             .collection("comments")
             .orderBy("createdAt", "desc")
@@ -78,6 +80,63 @@ exports.getDiagram = (request, response) => {
           comment.commentId = doc.id;
           diagramData.comments.push(comment);
         });
+
+        let objectsRef = db.collection('objects')
+
+        if(diagramData.type === "1"){
+          objectsRef = objectsRef.where('diagramId', '==', idDiagram)
+        }else{
+          objectsRef = objectsRef.where('diagramIds', 'array-contains', idDiagram)
+
+        }
+
+        return objectsRef.get()
+      })      
+      .then(data => {
+        let jsonDiagram = JSON.parse(diagramData.diagram)
+        diagramData.new = []
+        if(jsonDiagram.hasOwnProperty('cells')){
+          diagramData.new = jsonDiagram.cells;
+        }
+        var copy = {}
+
+        data.docs.forEach(doc => {
+
+          let shape =  doc.data().object
+          copy =  doc.data().object
+          shape.attrs.body.fill = doc.data().color
+          shape.attrs.label.text = doc.data().name
+          shape.attrs.root.labelcolor = doc.data().colorName
+          if(diagramData.type === "1"){
+            diagramData.new.push(shape)
+          }else{
+            dataRef = diagramData.refObjects
+            
+            dataRef.forEach(element => {
+              copy = doc.data().object
+              if(element.ref === doc.id){
+
+                copy.position = element.position
+                copy.attrs.root.rid = element.ref
+                copy.id = element.origin
+                copy.ports = element.ports
+                copy.embeds = element.embeds
+
+                if(element.parent !== ""){
+                  copy.parent = element.parent
+                }
+
+                diagramData.new.push(copy)
+
+              }
+              copy = {}
+            });
+          }
+        })
+
+        jsonDiagram.cells = diagramData.new
+        diagramData.diagram = JSON.stringify(jsonDiagram)
+        diagramData.diagramId = idDiagram
         return response.json(diagramData);
       })
       .catch(err => {
@@ -109,6 +168,7 @@ exports.diagramProject = (request, response) => {
         if (!doc.exists) {
           return response.status(404).json({ error: "Proyecto no encontrado" });
         }
+        //consultar el numero de objectos
       })
       .then(() => {
         return db.collection("diagrams").add(newDiagram);
@@ -230,6 +290,10 @@ exports.deleteDiagram = (request, response) => {
       if (doc.data().diagramUserId !== request.user.userId) {
         return response.status(403).json({ error: "No autorizado" });
       } else {
+        let objectsIds = doc.data().objectsIds
+        objectsIds.forEach(id => {
+          removeObject(id, request.params.diagramId)
+        });
         return document.delete();
       }
     })
@@ -244,6 +308,8 @@ exports.deleteDiagram = (request, response) => {
 
 exports.saveDiagram = (request, response) => {
   let firstNameUser = request.user.firstNameUser
+  
+  let idsRemoved = request.body.idsRemoved
   let diagram = {
     diagram: request.body.diagram
   };
@@ -258,9 +324,21 @@ exports.saveDiagram = (request, response) => {
       if (doc.data().diagramUserId !== request.user.userId) {
         return response.status(403).json({ error: "No autorizado" });
       } else {
-        let {objectsIds, objects} = getDiagramObjects(diagram)
-        diagram.objects = objects
+
+        let {objectsIds, cells, refObjects, objects} = getDiagramObjects(diagram, doc.data().type, doc.id, idsRemoved)
+        if(idsRemoved.length){
+          idsRemoved.forEach(id => {
+            if(!objectsIds.includes(id)){
+              removeObject(id,doc.id)
+            }
+          });
+        }
+        let jsonDiagram = JSON.parse(diagram.diagram)
+        jsonDiagram.cells = cells
+        diagram.diagram = JSON.stringify(jsonDiagram)
         diagram.objectsIds = objectsIds
+        diagram.refObjects = refObjects
+        diagram.objects = objects
         document.update(diagram);
         return doc
       }
@@ -275,27 +353,129 @@ exports.saveDiagram = (request, response) => {
     });
 };
 
-const getDiagramObjects = (diagram) => {
+const getDiagramObjects = (diagram, type, diagramId, idsRemoved) => {
   let jsonDiagram = JSON.parse(diagram.diagram)
-  let objects = []
+  let cells = []
   let objectsIds = []
+  let refObjects = []
+  let objects = []
+  let parent = ""
   let newObject = {}
+  let idObject = ""
   jsonDiagram.cells.forEach(element => {
     if(element.class === 'object'){
+      idObject = element.id
+      if(type !== "1"){
+        
+        idObject = element.attrs.root.rid
+      }
       newObject = {
-        id: element.id,
+        id: idObject,
         name: element.attrs.label.text,
         colorName: element.attrs.root.labelcolor,
         color: element.attrs.body.fill,
         shape: element.attrs.root.title,
+        diagramIds: [],
+        diagramId,
+        object: element
       }
+      //cambiar la informacion que se guarda en el diagrama
+      saveObject(newObject, diagramId, idsRemoved)
+
+      if(element.parent !== undefined){
+        parent = element.parent
+      }
+      refObjects.push({
+        origin: element.id, 
+        ref: element.attrs.root.rid, 
+        position: element.position,
+        ports:  element.ports,
+        embeds:  element.embeds,
+        parent
+      })
+      objectsIds.push(idObject)
       objects.push(newObject)
-      objectsIds.push(element.id)
+    }else{
+      cells.push(element)
     }
   });
-  
-  return {objectsIds, objects}
+
+  return {objectsIds, cells, refObjects, objects}
 }
+
+const removeObject = (id,diagramId) => {
+
+  const document = db.doc(`/objects/${id}`);
+  document
+    .get()
+    .then(doc => {
+      if (doc.exists) {
+        if(doc.data().diagramId === diagramId){
+          // eliminar diagramas
+          let diagramIds = doc.data().diagramIds
+            diagramIds.forEach(id => {
+            let toEliminate = db.doc(`/diagrams/${id}`);
+            toEliminate
+              .get()
+              .then(doc => {
+                if (doc.exists) {
+                  toEliminate.delete();
+                  doc.data().objectsIds.forEach(element => {
+                    removeObject(element,id)
+                  });
+                }
+              })
+              .catch(err => {
+                console.error(err);
+                return response.status(500).json({ error: err.code });
+              });
+          });
+          document.delete();
+        }else{
+          // eliminar de la lista de diagramas
+          // cuando el objecto esta mas de una vez 
+          let diagramIds = doc.data().diagramIds
+          diagramIds = diagramIds.filter(id => id !==  diagramId)
+          document.update({diagramIds});
+        }
+      }
+    })
+    .catch(err => {
+      console.error(err);
+      return response.status(500).json({ error: err.code });
+    });
+};
+
+const saveObject = (object,diagramId, idsRemoved) => {
+
+  const document = db.doc(`/objects/${object.id}`);
+  document
+    .get()
+    .then(doc => {
+      if (!doc.exists) {
+        //create
+        //db.collection("objects").add(object);
+        db.doc(`/objects/${object.id}`).set(object);
+      }else{
+        //update
+        if(doc.data().diagramId === diagramId){
+          object.diagramIds = doc.data().diagramIds
+          document.update(object);
+        }else{
+          let diagramIds = doc.data().diagramIds
+          if(!diagramIds.includes(diagramId)){
+            diagramIds.push(diagramId)
+            document.update({diagramIds});
+          }
+        }
+
+      }
+    })
+    .catch(err => {
+      console.error(err);
+      return response.status(500).json({ error: err.code });
+    });
+};
 
 const searchProjectForNotification = (doc, firstNameUser, projectId, diagramId, type) => {
   let docId = doc.id
@@ -343,19 +523,19 @@ const saveNotifications = (userIds, type, information) => {
           tokens.push(data.data().token)
         }
       })
-
+      const nameCapitalized = information.firstNameUser.charAt(0).toUpperCase() + information.firstNameUser.slice(1).toLowerCase();
       if(type === "observer"){
-        notificationTitle = information.firstNameUser +' ha creado un projecto'
-        notificationDescription = information.firstNameUser +' te asignó como observador'
+        notificationTitle = nameCapitalized +' ha creado un projecto'
+        notificationDescription = nameCapitalized +' te asignó como observador'
         dataValue = information.projectId
       }else if(type === "comment"){
-        notificationTitle = information.firstNameUser +' ha comentado tu diagrama'
+        notificationTitle = nameCapitalized +' ha comentado tu diagrama'
         notificationDescription = ' ha sido comentado'
         nuevaNotification.diagramId = information.diagramId
         dataValue = information.docId
       }else{
-        notificationTitle = information.firstNameUser +' ha modificado el diagrama'
-        notificationDescription = information.firstNameUser +' ha modificado el diagrama'
+        notificationTitle = nameCapitalized +' ha modificado el diagrama'
+        notificationDescription = nameCapitalized +' ha modificado el diagrama'
         nuevaNotification.diagramId = information.diagramId
         dataValue = information.diagramId           
       }
@@ -462,3 +642,21 @@ exports.getComment = (request, response) => {
       return response.status(500).json({ error: err.code });
     });
 };
+
+exports.getObjectDiagram = (request, response) => {
+
+  const document = db.doc(`/objects/${request.params.objectId}`);
+  document
+    .get()
+    .then(doc => {
+      if (!doc.exists) {
+        return response.json(0);
+      }
+      let object = doc.data();
+      response.json(object.diagramIds.length);
+    })
+    .catch(err => {
+      console.error(err);
+      return response.status(500).json({ error: err.code });
+    });
+}

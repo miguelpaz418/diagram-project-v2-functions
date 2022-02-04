@@ -19,7 +19,8 @@ const {
   saveDiagram,
   commentOnDiagram,
   getAllAttributes,
-  getComment
+  getComment,
+  getObjectDiagram
 } = require("./handlers/projects");
 
 const {
@@ -32,8 +33,6 @@ const {
   signupWithGoogle,
   passwordReset,
   markNotificationsRead,
-  sendNo,
-  getNotification,
   getNotificationUser,
   saveFcmToken
 } = require("./handlers/user");
@@ -60,6 +59,8 @@ app.get('/attributes', getAllAttributes);
 app.get('/notifications',FBAuth, getNotificationUser);
 app.post('/notifications',FBAuth, markNotificationsRead);
 app.post('/fcm/token',FBAuth, saveFcmToken);
+app.get('/object/:objectId',FBAuth, getObjectDiagram);
+
 
 // Signup route
 app.post('/signup', signup);
