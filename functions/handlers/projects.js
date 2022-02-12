@@ -94,9 +94,10 @@ exports.getDiagram = (request, response) => {
       })      
       .then(data => {
         let jsonDiagram = JSON.parse(diagramData.diagram)
-        diagramData.new = []
+        diagramData.objects = []
+        let copyObjects = []
         if(jsonDiagram.hasOwnProperty('cells')){
-          diagramData.new = jsonDiagram.cells;
+          copyObjects = jsonDiagram.cells;
         }
         var copy = {}
 
@@ -108,7 +109,7 @@ exports.getDiagram = (request, response) => {
           shape.attrs.label.text = doc.data().name
           shape.attrs.root.labelcolor = doc.data().colorName
           if(diagramData.type === "1"){
-            diagramData.new.push(shape)
+            copyObjects.push(shape)
           }else{
             dataRef = diagramData.refObjects
             
@@ -126,7 +127,7 @@ exports.getDiagram = (request, response) => {
                   copy.parent = element.parent
                 }
 
-                diagramData.new.push(copy)
+                copyObjects.push(copy)
 
               }
               copy = {}
@@ -134,7 +135,7 @@ exports.getDiagram = (request, response) => {
           }
         })
 
-        jsonDiagram.cells = diagramData.new
+        jsonDiagram.cells = copyObjects
         diagramData.diagram = JSON.stringify(jsonDiagram)
         diagramData.diagramId = idDiagram
         return response.json(diagramData);
@@ -154,7 +155,7 @@ exports.diagramProject = (request, response) => {
       projectId: request.params.projectId,
       diagramUserId: request.user.userId,
       commentCount: 0,
-      objects: [],
+      refObjects: [],
       objectsIds: []
     };
   
@@ -325,7 +326,7 @@ exports.saveDiagram = (request, response) => {
         return response.status(403).json({ error: "No autorizado" });
       } else {
 
-        let {objectsIds, cells, refObjects, objects} = getDiagramObjects(diagram, doc.data().type, doc.id, idsRemoved)
+        let {objectsIds, cells, refObjects} = getDiagramObjects(diagram, doc.data().type, doc.id, idsRemoved)
         if(idsRemoved.length){
           idsRemoved.forEach(id => {
             if(!objectsIds.includes(id)){
@@ -338,13 +339,12 @@ exports.saveDiagram = (request, response) => {
         diagram.diagram = JSON.stringify(jsonDiagram)
         diagram.objectsIds = objectsIds
         diagram.refObjects = refObjects
-        diagram.objects = objects
         document.update(diagram);
         return doc
       }
     })
     .then((res) => {
-      searchProjectForNotification(res, firstNameUser, res.data().projectId, res.id, "modify")
+      searchProjectForNotification(res, request.user.userId, firstNameUser, res.data().projectId, res.id, "modify")
       response.json({ message: "Diagrama actualizado con éxito" });
     })
     .catch(err => {
@@ -358,7 +358,6 @@ const getDiagramObjects = (diagram, type, diagramId, idsRemoved) => {
   let cells = []
   let objectsIds = []
   let refObjects = []
-  let objects = []
   let parent = ""
   let newObject = {}
   let idObject = ""
@@ -391,16 +390,21 @@ const getDiagramObjects = (diagram, type, diagramId, idsRemoved) => {
         position: element.position,
         ports:  element.ports,
         embeds:  element.embeds,
-        parent
+        parent,
+        id: idObject,
+        name: element.attrs.label.text,
+        colorName: element.attrs.root.labelcolor,
+        color: element.attrs.body.fill,
+        shape: element.attrs.root.title,
       })
       objectsIds.push(idObject)
-      objects.push(newObject)
+
     }else{
       cells.push(element)
     }
   });
 
-  return {objectsIds, cells, refObjects, objects}
+  return {objectsIds, cells, refObjects}
 }
 
 const removeObject = (id,diagramId) => {
@@ -477,7 +481,7 @@ const saveObject = (object,diagramId, idsRemoved) => {
     });
 };
 
-const searchProjectForNotification = (doc, firstNameUser, projectId, diagramId, type) => {
+const searchProjectForNotification = (doc, userId, firstNameUser, projectId, diagramId, type) => {
   let docId = doc.id
   db.doc(`/projects/${projectId}`)
     .get()
@@ -490,8 +494,12 @@ const searchProjectForNotification = (doc, firstNameUser, projectId, diagramId, 
           firstNameUser,
           diagramId
         }
-        if(type === "comment"){
+
+        if(type === "comment" && doc.data().projectUserId !== userId){
+
           observers = [doc.data().projectUserId]
+
+          type = "commentOwner"
         }
         saveNotifications(observers, type, information)
       }
@@ -529,10 +537,16 @@ const saveNotifications = (userIds, type, information) => {
         notificationDescription = nameCapitalized +' te asignó como observador'
         dataValue = information.projectId
       }else if(type === "comment"){
+        notificationTitle = nameCapitalized +' ha comentado un diagrama'
+        notificationDescription = 'ver diagrama como observador'
+        nuevaNotification.diagramId = information.diagramId
+        dataValue = information.docId
+      }else if(type === "commentOwner"){
         notificationTitle = nameCapitalized +' ha comentado tu diagrama'
         notificationDescription = ' ha sido comentado'
         nuevaNotification.diagramId = information.diagramId
         dataValue = information.docId
+        type = "comment"
       }else{
         notificationTitle = nameCapitalized +' ha modificado el diagrama'
         notificationDescription = nameCapitalized +' ha modificado el diagrama'
@@ -541,8 +555,7 @@ const saveNotifications = (userIds, type, information) => {
       }
       nuevaNotification.title = notificationTitle
       nuevaNotification.description = notificationDescription
-      nuevaNotification.description = notificationDescription
-      
+
       const payload = {
         notification: {
           title: notificationTitle,
@@ -602,7 +615,7 @@ exports.commentOnDiagram = (request, response) => {
       return db.collection("comments").add(newComment);
     })
     .then((res) => {
-      searchProjectForNotification(res, newComment.firstNameUser, newComment.projectId, newComment.diagramId, "comment")
+      searchProjectForNotification(res, newComment.userId, newComment.firstNameUser, newComment.projectId, newComment.diagramId, "comment")
       response.json(newComment);
     })
     .catch(err => {
