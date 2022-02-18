@@ -522,13 +522,13 @@ const saveNotifications = (userIds, type, information) => {
     read: false,
     projectId: information.projectId
   }
-  db.collection('tokens')
+  db.collection('users')
     .where('userId', 'in', userIds)
     .get()
     .then(doc => {
       doc.docs.forEach(data => {
-        if(data.data().token !== ""){
-          tokens.push(data.data().token)
+        if(data.data().notificationToken !== ""){
+          tokens.push(data.data().notificationToken)
         }
       })
       const nameCapitalized = information.firstNameUser.charAt(0).toUpperCase() + information.firstNameUser.slice(1).toLowerCase();

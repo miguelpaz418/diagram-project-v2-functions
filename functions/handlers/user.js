@@ -65,8 +65,8 @@ exports.signup = (request, response) => {
                 email: newUser.email,
                 createdAt: new Date().toISOString(),
                 imageUrl: `https://firebasestorage.googleapis.com/v0/b/${config.storageBucket}/o/${noImg}?alt=media`,
-                tokens: []
-            };
+                notificationToken: ""
+            }
             return db.doc(`/users/${userId}`).set(userCredentials);
         })
         .then(() => {
@@ -277,7 +277,8 @@ exports.signupWithGoogle = (request, response) => {
         lastName: request.body.lastName,
         email: request.body.email,
         createdAt: new Date().toISOString(),
-        imageUrl: request.body.imageUrl
+        imageUrl: request.body.imageUrl,
+        notificationToken: ""
       };
       db.doc(`/users/${userId}`)
         .get()
@@ -367,17 +368,17 @@ db
 
 exports.saveFcmToken = async (request, response) => {
 
-  const cityRef = db.collection('tokens').where("token", "==", request.body.token);
+  const cityRef = db.collection('users').where("notificationToken", "==", request.body.token);
   cityRef.get()
   .then(doc => {
     if (doc.size > 0) {
       if(doc.docs[0].data().userId != request.user.userId){
-        doc.docs[0].ref.update({ token: "" });
-        const cityRef2 = db.collection('tokens').where("userId", "==", request.user.userId);
+        doc.docs[0].ref.update({ notificationToken: "" });
+        const cityRef2 = db.collection('users').where("userId", "==", request.user.userId);
         cityRef2.get()
         .then(doc => {
           if (doc.size > 0) {
-            doc.docs[0].ref.update({ token: request.body.token });
+            doc.docs[0].ref.update({ notificationToken: request.body.token });
             return response.json({ message: "Token has saved"});
           }else{
             //crearlo
@@ -394,12 +395,12 @@ exports.saveFcmToken = async (request, response) => {
       }
 
     }else{
-      const cityRef2 = db.collection('tokens').where("userId", "==", request.user.userId);
+      const cityRef2 = db.collection('users').where("userId", "==", request.user.userId);
       cityRef2.get()
       .then(doc => {
         if (doc.size > 0) {
 
-          doc.docs[0].ref.update({ token: request.body.token });
+          doc.docs[0].ref.update({ notificationToken: request.body.token });
           return response.json({ message: "Token has saved"});
         }else{
           //crearlo
